@@ -15,7 +15,7 @@ notify = true
 delete_duplicates = false
 
 # Where files go when no rule matches. Omit to leave unmatched files alone.
-fallback_dest = "~/Downloads/Telegram Sorted/Other"
+fallback_dest = "~/Telegram/Other/{ext}"
 
 # Rules are checked top to bottom; the FIRST match wins.
 # A rule needs a name, a dest and at least one matcher. When several matchers
@@ -38,36 +38,36 @@ fallback_dest = "~/Downloads/Telegram Sorted/Other"
 name = "Series"
 name_regex = '(?i)^(?P<series>.+?)[ ._-]S\d{2}E\d{2}'
 extensions = ["mkv", "mp4", "avi", "m4v", "ts"]
-dest = "~/Movies/Series/{series}"
+dest = "~/Telegram/Series/{series}"
 
 [[rule]]
 name = "Videos"
 extensions = ["mp4", "mkv", "mov", "avi", "webm", "m4v", "wmv", "flv", "3gp", "ts"]
-dest = "~/Movies/Telegram/{year}-{month}"
+dest = "~/Telegram/Movies/{year}-{month}"
 
 [[rule]]
 name = "Archives"
 extensions = ["zip", "rar", "7z", "tar", "gz"]
 # min_size_mb = 100
-dest = "~/Documents/Telegram/Archives/{ext}"
+dest = "~/Telegram/Archives/{ext}"
 
 [[rule]]
 name = "Documents"
 extensions = ["pdf", "docx", "xlsx", "pptx", "epub"]
-dest = "~/Documents/Telegram/{year}"
+dest = "~/Telegram/Docs/{ext}"
 
 [[rule]]
 name = "Code & text"
 extensions = ["txt", "md", "json", "yaml", "yml", "py", "sh", "html", "tex", "ipynb"]
-dest = "~/Documents/Telegram/Code"
+dest = "~/Telegram/Code/{ext}"
 
 [[rule]]
 name = "Images"
 extensions = ["jpg", "jpeg", "png", "gif", "webp", "heic"]
 max_size_mb = 50
-dest = "~/Pictures/Telegram/{year}-{month}"
+dest = "~/Telegram/Pictures/{year}-{month}"
 
 [[rule]]
 name = "Music"
 extensions = ["mp3", "flac", "m4a", "aac", "ogg", "opus", "wav"]
-dest = "~/Music/Telegram"
+dest = "~/Telegram/Music"

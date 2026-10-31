@@ -6,6 +6,20 @@ folders according to rules you define. A file is only touched after its size and
 modification time have been stable for `settle_secs`, so in-progress downloads
 are left alone.
 
+With the example config, everything from Telegram ends up in one place:
+
+```
+~/Telegram/
+├── Movies/2026-10/     mp4, mkv, mov, …
+├── Series/<name>/      Show.S01E02.mkv
+├── Music/              mp3, flac, ogg (voice messages), …
+├── Docs/pdf/ docx/ …
+├── Code/txt/ html/ md/ …
+├── Archives/zip/ rar/ …
+├── Pictures/2026-10/
+└── Other/<ext>/        anything no rule matches (no-ext/ for files without one)
+```
+
 ## Build
 
 ```sh
