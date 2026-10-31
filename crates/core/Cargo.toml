@@ -2,6 +2,7 @@
 name = "tgsort-core"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 description = "Core library of tgsort: config, rule matching and safe file moving"
 
 [lib]
