@@ -1,0 +1,67 @@
+# tgsort configuration. Default location: ~/.config/tgsort/config.toml
+# Every top-level key is optional; the values below are the defaults.
+
+# Folders to watch. "~" is expanded to your home directory.
+watch_dirs = ["~/Downloads/Telegram Desktop"]
+
+# Seconds a file must stay unchanged before it counts as fully downloaded.
+settle_secs = 15
+
+# Show a macOS notification when a file is moved.
+notify = true
+
+# If an identical file (same size and content) already exists at the
+# destination: false = leave the source alone, true = delete the source.
+delete_duplicates = false
+
+# Where files go when no rule matches. Omit to leave unmatched files alone.
+fallback_dest = "~/Downloads/Telegram Sorted/Other"
+
+# Rules are checked top to bottom; the FIRST match wins.
+# A rule needs a name, a dest and at least one matcher. When several matchers
+# are given, ALL of them must match:
+#   extensions   - list of extensions, case-insensitive, without the dot
+#   name_regex   - Rust regex matched against the file name (use (?i) for
+#                  case-insensitive matching)
+#   min_size_mb  - minimum file size in MB (1 MB = 1024 * 1024 bytes)
+#   max_size_mb  - maximum file size in MB
+#
+# dest placeholders (the dest is a folder; the file keeps its name):
+#   {year} {month} {day}  from the file's modification time (local time)
+#   {ext}                 lowercase extension without the dot
+#   {stem}                file name without the extension
+#   {series}              any named capture group of name_regex, e.g.
+#                         (?P<series>...); dots/underscores become spaces
+
+[[rule]]
+name = "Series"
+name_regex = '(?i)^(?P<series>.+?)[ ._-]S\d{2}E\d{2}'
+extensions = ["mkv", "mp4", "avi"]
+dest = "~/Movies/Series/{series}"
+
+[[rule]]
+name = "Videos"
+extensions = ["mp4", "mkv", "mov", "avi", "webm"]
+dest = "~/Movies/Telegram/{year}-{month}"
+
+[[rule]]
+name = "Archives"
+extensions = ["zip", "rar", "7z", "tar", "gz"]
+# min_size_mb = 100
+dest = "~/Documents/Telegram/Archives/{ext}"
+
+[[rule]]
+name = "Documents"
+extensions = ["pdf", "docx", "xlsx", "pptx", "epub"]
+dest = "~/Documents/Telegram/{year}"
+
+[[rule]]
+name = "Code & text"
+extensions = ["txt", "md", "json", "yaml", "yml", "py", "sh", "html", "tex", "ipynb"]
+dest = "~/Documents/Telegram/Code"
+
+[[rule]]
+name = "Images"
+extensions = ["jpg", "jpeg", "png", "gif", "webp", "heic"]
+max_size_mb = 50
+dest = "~/Pictures/Telegram/{year}-{month}"
