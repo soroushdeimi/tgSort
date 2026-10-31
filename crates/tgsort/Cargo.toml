@@ -1,6 +1,6 @@
 [package]
 name = "tgsort"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 description = "Watch Telegram Desktop downloads and sort them into folders by rule"
