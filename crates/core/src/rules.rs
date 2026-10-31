@@ -60,7 +60,7 @@ pub fn plan(cfg: &Config, file: &Path) -> Result<Option<Plan>> {
         ("year".into(), format!("{:04}", when.year())),
         ("month".into(), format!("{:02}", when.month())),
         ("day".into(), format!("{:02}", when.day())),
-        ("ext".into(), ext),
+        ("ext".into(), if ext.is_empty() { "no-ext".into() } else { ext }),
         (
             "stem".into(),
             file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
@@ -227,6 +227,14 @@ mod tests {
             .join(when.format("%Y/%m/%d").to_string())
             .join("mp4/My.Clip/My.Clip.MP4");
         assert_eq!(dest_of(&c, &f).unwrap().1, want);
+    }
+
+    #[test]
+    fn extensionless_file_gets_no_ext_placeholder() {
+        let d = tempfile::tempdir().unwrap();
+        let c = cfg("fallback_dest='ROOT/other/{ext}'\n[[rule]]\nname='V'\nextensions=['mp4']\ndest='ROOT/v'", d.path());
+        let (r, p) = dest_of(&c, &touch(d.path(), "README", 1)).unwrap();
+        assert_eq!((r.as_str(), p), ("fallback", d.path().join("other/no-ext/README")));
     }
 
     #[test]

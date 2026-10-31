@@ -29,6 +29,7 @@ fallback_dest = "~/Downloads/Telegram Sorted/Other"
 # dest placeholders (the dest is a folder; the file keeps its name):
 #   {year} {month} {day}  from the file's modification time (local time)
 #   {ext}                 lowercase extension without the dot
+#                         ("no-ext" for files without an extension)
 #   {stem}                file name without the extension
 #   {series}              any named capture group of name_regex, e.g.
 #                         (?P<series>...); dots/underscores become spaces
