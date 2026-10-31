@@ -4,16 +4,49 @@ use anyhow::{ensure, Context, Result};
 use regex::Regex;
 use serde::Deserialize;
 
-use crate::rules::check_template;
+use crate::rules::{check_template, dest_uses_ai};
+use crate::AiChoice;
 
 #[derive(Debug, Clone)]
 pub struct Config {
+    /// Watched directories (derived from `sources` when those are used).
     pub watch_dirs: Vec<PathBuf>,
+    /// `[[source]]` entries; empty in legacy `watch_dirs` mode (then `{root}` is invalid).
+    pub sources: Vec<Source>,
     pub settle_secs: u64,
     pub notify: bool,
     pub delete_duplicates: bool,
     pub rules: Vec<Rule>,
     pub fallback_dest: Option<String>,
+    /// Master switch for on-device AI classification.
+    pub ai_enabled: bool,
+    /// Explicit helper path (`~` expanded). `None` = `tgsort-ai` next to the tgsort executable.
+    pub ai_helper: Option<PathBuf>,
+    pub ai_timeout_secs: u64,
+}
+
+/// A watched directory with the destination root that `{root}` expands to for its files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Source {
+    pub dir: PathBuf,
+    pub root: PathBuf,
+}
+
+impl Config {
+    /// The source whose directory is exactly the parent of `file` (watching is non-recursive,
+    /// so a nested source dir never claims files of its parent, and vice versa).
+    pub fn source_for(&self, file: &Path) -> Option<&Source> {
+        let parent = file.parent()?;
+        let parent = parent.canonicalize().unwrap_or_else(|_| parent.into());
+        self.sources
+            .iter()
+            .find(|s| s.dir.canonicalize().unwrap_or_else(|_| s.dir.clone()) == parent)
+    }
+
+    /// True if any rule has a `{ai}` destination segment.
+    pub fn uses_ai(&self) -> bool {
+        self.rules.iter().any(|r| !r.ai_choices.is_empty())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -26,12 +59,18 @@ pub struct Rule {
     pub max_size_mb: Option<f64>,
     /// Destination directory template.
     pub dest: String,
+    /// Choices for the `{ai}` placeholder, in config order. Empty = rule doesn't use AI.
+    pub ai_choices: Vec<AiChoice>,
 }
 
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Raw {
-    watch_dirs: Vec<String>,
+    ai_enabled: bool,
+    ai_helper: Option<String>,
+    ai_timeout_secs: u64,
+    watch_dirs: Option<Vec<String>>,
+    source: Vec<RawSource>,
     settle_secs: u64,
     notify: bool,
     delete_duplicates: bool,
@@ -42,14 +81,25 @@ struct Raw {
 impl Default for Raw {
     fn default() -> Self {
         Raw {
-            watch_dirs: vec!["~/Downloads/Telegram Desktop".into()],
+            watch_dirs: None,
+            source: Vec::new(),
             settle_secs: 15,
             notify: true,
             delete_duplicates: false,
             fallback_dest: None,
+            ai_enabled: true,
+            ai_helper: None,
+            ai_timeout_secs: 60,
             rule: Vec::new(),
         }
     }
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+struct RawSource {
+    dir: String,
+    root: String,
 }
 
 #[derive(Deserialize, Default)]
@@ -61,6 +111,14 @@ struct RawRule {
     min_size_mb: Option<f64>,
     max_size_mb: Option<f64>,
     dest: Option<String>,
+    ai_choices: Vec<RawChoice>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+struct RawChoice {
+    name: String,
+    hint: String,
 }
 
 impl Config {
@@ -73,35 +131,79 @@ impl Config {
     /// Parses and validates config text.
     pub fn parse(text: &str) -> Result<Config> {
         let raw: Raw = toml::from_str(text).context("invalid TOML")?;
-        ensure!(!raw.watch_dirs.is_empty(), "watch_dirs must not be empty");
-        let watch_dirs = raw
-            .watch_dirs
+        ensure!(
+            raw.watch_dirs.is_none() || raw.source.is_empty(),
+            "use either watch_dirs or [[source]], not both"
+        );
+        let abs = |what: &str, d: &str| -> Result<PathBuf> {
+            let p = expand_tilde(d)?;
+            ensure!(
+                p.is_absolute(),
+                "{what} {d:?} must be absolute or start with ~"
+            );
+            Ok(p)
+        };
+        let sources = raw
+            .source
             .iter()
-            .map(|d| {
-                let p = expand_tilde(d)?;
+            .enumerate()
+            .map(|(i, s)| {
+                (|| {
+                    ensure!(!s.dir.trim().is_empty(), "missing dir");
+                    ensure!(!s.root.trim().is_empty(), "missing root");
+                    Ok(Source {
+                        dir: abs("dir", &s.dir)?,
+                        root: abs("root", &s.root)?,
+                    })
+                })()
+                .with_context(|| format!("source #{}", i + 1))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let watch_dirs = if sources.is_empty() {
+            let wd = raw
+                .watch_dirs
+                .unwrap_or_else(|| vec!["~/Downloads/Telegram Desktop".into()]);
+            ensure!(!wd.is_empty(), "watch_dirs must not be empty");
+            wd.iter()
+                .map(|d| abs("watch dir", d))
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            sources.iter().map(|s| s.dir.clone()).collect()
+        };
+        let roots = !sources.is_empty();
+        if let Some(f) = &raw.fallback_dest {
+            check_template(f, None, false, roots).context("fallback_dest")?;
+        }
+        ensure!(raw.ai_timeout_secs > 0, "ai_timeout_secs must be positive");
+        let ai_helper = raw
+            .ai_helper
+            .as_deref()
+            .map(|h| {
+                let p = expand_tilde(h)?;
                 ensure!(
                     p.is_absolute(),
-                    "watch dir {d:?} must be absolute or start with ~"
+                    "ai_helper {h:?} must be absolute or start with ~"
                 );
                 Ok(p)
             })
-            .collect::<Result<Vec<_>>>()?;
-        if let Some(f) = &raw.fallback_dest {
-            check_template(f, None).context("fallback_dest")?;
-        }
+            .transpose()?;
         let rules = raw
             .rule
             .into_iter()
             .enumerate()
-            .map(|(i, r)| Rule::build(i, r))
+            .map(|(i, r)| Rule::build(i, r, roots))
             .collect::<Result<Vec<_>>>()?;
         Ok(Config {
             watch_dirs,
+            sources,
             settle_secs: raw.settle_secs,
             notify: raw.notify,
             delete_duplicates: raw.delete_duplicates,
             rules,
             fallback_dest: raw.fallback_dest,
+            ai_enabled: raw.ai_enabled,
+            ai_helper,
+            ai_timeout_secs: raw.ai_timeout_secs,
         })
     }
 
@@ -118,16 +220,16 @@ impl Config {
 }
 
 impl Rule {
-    fn build(idx: usize, r: RawRule) -> Result<Rule> {
+    fn build(idx: usize, r: RawRule, roots: bool) -> Result<Rule> {
         let label = if r.name.is_empty() {
             format!("#{}", idx + 1)
         } else {
             r.name.clone()
         };
-        Self::build_inner(r).with_context(|| format!("rule {label}"))
+        Self::build_inner(r, roots).with_context(|| format!("rule {label}"))
     }
 
-    fn build_inner(r: RawRule) -> Result<Rule> {
+    fn build_inner(r: RawRule, roots: bool) -> Result<Rule> {
         ensure!(!r.name.trim().is_empty(), "missing name");
         let dest = r.dest.filter(|d| !d.trim().is_empty());
         let dest = dest.context("missing dest")?;
@@ -166,7 +268,21 @@ impl Rule {
                 || r.max_size_mb.is_some(),
             "needs at least one matcher (extensions, name_regex, min_size_mb, max_size_mb)"
         );
-        check_template(&dest, name_regex.as_ref()).context("dest")?;
+        let ai_choices = build_choices(r.ai_choices)?;
+        if ai_choices.is_empty() {
+            ensure!(
+                !dest.contains("{ai}"),
+                "dest uses {{ai}} but the rule has no ai_choices"
+            );
+        }
+        check_template(&dest, name_regex.as_ref(), !ai_choices.is_empty(), roots)
+            .context("dest")?;
+        // A rule whose dest has no {ai} segment never asks the AI.
+        let ai_choices = if dest_uses_ai(&dest) {
+            ai_choices
+        } else {
+            Vec::new()
+        };
         Ok(Rule {
             name: r.name,
             extensions,
@@ -174,8 +290,32 @@ impl Rule {
             min_size_mb: r.min_size_mb,
             max_size_mb: r.max_size_mb,
             dest,
+            ai_choices,
         })
     }
+}
+
+fn build_choices(raw: Vec<RawChoice>) -> Result<Vec<AiChoice>> {
+    let mut seen = std::collections::HashSet::new();
+    raw.into_iter()
+        .map(|c| {
+            let name = c.name;
+            ensure!(
+                !name.trim().is_empty() && name == name.trim(),
+                "ai_choices name {name:?} must be non-empty without surrounding spaces"
+            );
+            ensure!(
+                !name.contains(['/', '\\', '\0']) && name != "." && name != "..",
+                "ai_choices name {name:?} is not a safe folder name"
+            );
+            // Case-insensitive: macOS volumes usually are.
+            ensure!(
+                seen.insert(name.to_lowercase()),
+                "duplicate ai_choices name {name:?}"
+            );
+            Ok(AiChoice { name, hint: c.hint })
+        })
+        .collect()
 }
 
 /// Expands a leading `~` or `~/` to the home directory.
@@ -252,6 +392,97 @@ mod tests {
         let c = Config::parse(Config::example_toml()).unwrap();
         assert!(!c.rules.is_empty());
         assert!(c.fallback_dest.is_some());
+        let docs = c.rules.iter().find(|r| r.name == "Documents").unwrap();
+        assert_eq!(docs.ai_choices.len(), 7);
+        assert!(docs.dest.starts_with("{root}/") && docs.dest.ends_with("/{ai}"));
+        assert_eq!(c.sources.len(), 2);
+        assert!(c.rules.iter().any(|r| r.name == "Installers"));
+    }
+
+    #[test]
+    fn ai_defaults_and_parse() {
+        let c = Config::parse("").unwrap();
+        assert!(c.ai_enabled && c.ai_helper.is_none() && c.ai_timeout_secs == 60);
+        assert!(!c.uses_ai());
+        let c = Config::parse(
+            "ai_enabled = false\nai_helper = '~/bin/h'\nai_timeout_secs = 5\n\
+             [[rule]]\nname='D'\nextensions=['pdf']\ndest='/t/{ext}/{ai}'\n\
+             ai_choices=[{name='B', hint='b'},{name='A'}]",
+        )
+        .unwrap();
+        assert!(!c.ai_enabled && c.ai_timeout_secs == 5 && c.uses_ai());
+        assert_eq!(
+            c.ai_helper.unwrap(),
+            dirs::home_dir().unwrap().join("bin/h")
+        );
+        let ch = &c.rules[0].ai_choices;
+        assert_eq!(ch.len(), 2);
+        assert_eq!((ch[0].name.as_str(), ch[0].hint.as_str()), ("B", "b"));
+        assert_eq!((ch[1].name.as_str(), ch[1].hint.as_str()), ("A", ""));
+    }
+
+    #[test]
+    fn ai_validation_errors() {
+        let r = |dest: &str, choices: &str| {
+            err(&format!(
+                "[[rule]]\nname='a'\nextensions=['x']\ndest='{dest}'\nai_choices={choices}"
+            ))
+        };
+        assert!(r("/t/{ai}", "[]").contains("no ai_choices"));
+        assert!(r("/t/x{ai}", "[{name='A'}]").contains("entire path segment"));
+        assert!(r("/t/{ai}/{ai}x", "[{name='A'}]").contains("entire path segment"));
+        assert!(r("{ai}", "[{name='A'}]").contains("absolute"));
+        assert!(r("/{ai}", "[{name='A'}]").contains("absolute"));
+        for bad in ["''", "'a/b'", "'.'", "'..'", "' x'"] {
+            assert!(
+                r("/t/{ai}", &format!("[{{name={bad}}}]")).contains("ai_choices"),
+                "{bad}"
+            );
+        }
+        assert!(r("/t/{ai}", "[{name='A'},{name='a'}]").contains("duplicate"));
+        assert!(r("/t/{ai}", "[{name='A',bogus=1}]").contains("bogus"));
+        assert!(err("fallback_dest='/t/{ai}'").contains("placeholder {ai}"));
+        assert!(err("ai_timeout_secs = 0").contains("ai_timeout_secs"));
+        assert!(err("ai_helper = 'rel/h'").contains("ai_helper"));
+        // choices without {ai} in dest are accepted but inert
+        let c = Config::parse(
+            "[[rule]]\nname='a'\nextensions=['x']\ndest='/t'\nai_choices=[{name='A'}]",
+        )
+        .unwrap();
+        assert!(!c.uses_ai());
+    }
+
+    #[test]
+    fn sources_and_root_validation() {
+        let c = Config::parse(
+            "fallback_dest='{root}/Other/{ext}'\n\
+             [[source]]\ndir='/tmp/d'\nroot='~/R'\n[[source]]\ndir='/tmp/d/t'\nroot='/r2'\n\
+             [[rule]]\nname='a'\nextensions=['x']\ndest='{root}'",
+        )
+        .unwrap();
+        assert_eq!(c.sources.len(), 2);
+        assert_eq!(c.sources[0].root, dirs::home_dir().unwrap().join("R"));
+        assert_eq!(
+            c.watch_dirs,
+            [PathBuf::from("/tmp/d"), PathBuf::from("/tmp/d/t")]
+        );
+        let rule = |d: &str| format!("[[rule]]\nname='a'\nextensions=['x']\ndest='{d}'");
+        let src = "[[source]]\ndir='/d'\nroot='/r'\n";
+        assert!(err(&format!("{src}{}", rule("/t/{root}"))).contains("{root}"));
+        assert!(err(&format!("{src}{}", rule("{root}x/a"))).contains("{root}"));
+        assert!(err(&format!("{src}{}", rule("{root}/{root}"))).contains("{root}"));
+        assert!(err(&rule("{root}/a")).contains("{root}"));
+        assert!(err("fallback_dest='{root}/a'").contains("{root}"));
+        assert!(err(&format!("watch_dirs=['/a']\n{src}")).contains("not both"));
+        assert!(err("[[source]]\ndir='/d'").contains("missing root"));
+        assert!(err("[[source]]\nroot='/d'").contains("missing dir"));
+        assert!(err("[[source]]\ndir='rel'\nroot='/d'").contains("absolute"));
+        assert!(err("[[source]]\ndir='/d'\nroot='rel'").contains("absolute"));
+        // legacy mode still works
+        assert!(Config::parse("watch_dirs=['/a']")
+            .unwrap()
+            .sources
+            .is_empty());
     }
 
     #[test]

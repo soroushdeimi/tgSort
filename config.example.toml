@@ -1,9 +1,6 @@
 # tgsort configuration. Default location: ~/.config/tgsort/config.toml
 # Every top-level key is optional; the values below are the defaults.
 
-# Folders to watch. "~" is expanded to your home directory.
-watch_dirs = ["~/Downloads/Telegram Desktop"]
-
 # Seconds a file must stay unchanged before it counts as fully downloaded.
 settle_secs = 15
 
@@ -15,7 +12,31 @@ notify = true
 delete_duplicates = false
 
 # Where files go when no rule matches. Omit to leave unmatched files alone.
-fallback_dest = "~/Telegram/Other/{ext}"
+fallback_dest = "{root}/Other/{ext}"
+
+# --- On-device AI classification (optional) -------------------------------
+# For rules that have ai_choices and an {ai} folder in their dest, tgsort asks
+# the small helper `tgsort-ai` (Apple on-device model, nothing leaves your Mac)
+# which choice fits each file. The helper is started only when such a file
+# needs sorting, once per batch, and exits right away. If it is missing,
+# disabled or unsure, the {ai} folder is simply left out.
+#
+# ai_enabled      = true        # master switch
+# ai_helper       = "~/.local/bin/tgsort-ai"   # default: tgsort-ai next to the tgsort binary
+# ai_timeout_secs = 60          # give up on the helper after this long
+
+# Folders to watch (must come after the top-level keys above), each with its own destination root (what {root} expands to
+# in the dests below). "~" is expanded to your home directory. Only the top
+# level of each folder is watched, so the Telegram folder inside ~/Downloads is
+# handled by its own source and sub-folders are never moved.
+# (The older `watch_dirs = [...]` list still works, but has no {root}.)
+[[source]]
+dir = "~/Downloads/Telegram Desktop"
+root = "~/Telegram"
+
+[[source]]
+dir = "~/Downloads"
+root = "~/Downloads"
 
 # Rules are checked top to bottom; the FIRST match wins.
 # A rule needs a name, a dest and at least one matcher. When several matchers
@@ -33,41 +54,60 @@ fallback_dest = "~/Telegram/Other/{ext}"
 #   {stem}                file name without the extension
 #   {series}              any named capture group of name_regex, e.g.
 #                         (?P<series>...); dots/underscores become spaces
+#   {root}                the root of the [[source]] the file was found in; only
+#                         valid as the first segment, e.g. "{root}/Docs/{ext}"
+#   {ai}                  folder picked by the on-device AI from the rule's
+#                         ai_choices; must be a whole path segment. Dropped
+#                         when the AI is unavailable or unsure.
 
 [[rule]]
 name = "Series"
 name_regex = '(?i)^(?P<series>.+?)[ ._-]S\d{2}E\d{2}'
 extensions = ["mkv", "mp4", "avi", "m4v", "ts"]
-dest = "~/Telegram/Series/{series}"
+dest = "{root}/Series/{series}"
 
 [[rule]]
 name = "Videos"
 extensions = ["mp4", "mkv", "mov", "avi", "webm", "m4v", "wmv", "flv", "3gp", "ts"]
-dest = "~/Telegram/Movies/{year}-{month}"
+dest = "{root}/Movies/{year}-{month}"
 
 [[rule]]
 name = "Archives"
 extensions = ["zip", "rar", "7z", "tar", "gz"]
 # min_size_mb = 100
-dest = "~/Telegram/Archives/{ext}"
+dest = "{root}/Archives/{ext}"
+
+[[rule]]
+name = "Installers"
+extensions = ["dmg", "pkg", "iso"]
+dest = "{root}/Installers"
 
 [[rule]]
 name = "Documents"
 extensions = ["pdf", "docx", "xlsx", "pptx", "epub"]
-dest = "~/Telegram/Docs/{ext}"
+dest = "{root}/Docs/{ext}/{ai}"
+ai_choices = [
+  { name = "Papers",   hint = "academic papers, research articles, theses, preprints, journal or conference publications" },
+  { name = "Books",    hint = "books, textbooks, ebooks, manuals, long-form reading material" },
+  { name = "Invoices", hint = "invoices, receipts, bills, bank statements, tax and payment documents" },
+  { name = "Resumes",  hint = "resumes, CVs, cover letters, job applications" },
+  { name = "Slides",   hint = "presentation slides, lecture slides, decks" },
+  { name = "Coursework", hint = "university coursework: homework, assignments, problem sets, exams, lecture notes" },
+  { name = "Work",     hint = "work documents: timesheets, reports, specs, project plans, internal docs, prompts" },
+]
 
 [[rule]]
 name = "Code & text"
 extensions = ["txt", "md", "json", "yaml", "yml", "py", "sh", "html", "tex", "ipynb"]
-dest = "~/Telegram/Code/{ext}"
+dest = "{root}/Code/{ext}"
 
 [[rule]]
 name = "Images"
 extensions = ["jpg", "jpeg", "png", "gif", "webp", "heic"]
 max_size_mb = 50
-dest = "~/Telegram/Pictures/{year}-{month}"
+dest = "{root}/Pictures/{year}-{month}"
 
 [[rule]]
 name = "Music"
 extensions = ["mp3", "flac", "m4a", "aac", "ogg", "opus", "wav"]
-dest = "~/Telegram/Music"
+dest = "{root}/Music"

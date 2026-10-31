@@ -1,3 +1,4 @@
+mod ai;
 mod launchd;
 mod notifier;
 mod pending;
@@ -6,7 +7,7 @@ mod watcher;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use tgsort_core::{is_ignorable, plan, Config};
+use tgsort_core::{is_ignorable, plan, plan_with_choice, Config, Plan};
 
 #[derive(Parser)]
 #[command(
@@ -33,7 +34,11 @@ enum Cmd {
         force: bool,
     },
     /// Validate the config and show what would happen to current files (moves nothing)
-    Check,
+    Check {
+        /// Actually ask the on-device AI helper (still moves nothing)
+        #[arg(long)]
+        ai: bool,
+    },
     /// Process existing settled files once, then exit
     Once {
         #[arg(long)]
@@ -78,7 +83,7 @@ fn real_main() -> Result<()> {
                 .with_context(|| format!("writing {}", path.display()))?;
             println!("{}", path.display());
         }
-        Cmd::Check => check(&Config::load(&path)?),
+        Cmd::Check { ai } => check(&Config::load(&path)?, ai),
         Cmd::Once { dry_run } => watcher::once(&Config::load(&path)?, dry_run),
         Cmd::Run { dry_run } => watcher::run(&Config::load(&path)?, dry_run)?,
         Cmd::Install => launchd::install(cli.config.as_deref(), &path)?,
@@ -87,17 +92,61 @@ fn real_main() -> Result<()> {
     Ok(())
 }
 
-fn check(cfg: &Config) {
+fn check(cfg: &Config, use_ai: bool) {
     println!("config OK: {} rule(s)", cfg.rules.len());
+    let ai_on = cfg.ai_enabled && cfg.uses_ai();
+    let mut gate = ai::Gate::default();
+    if use_ai && ai_on {
+        println!("AI helper: {}", ai::helper_path(cfg).display());
+        gate.available(cfg);
+    }
     for dir in &cfg.watch_dirs {
-        println!("\n{}", dir.display());
+        match cfg.sources.iter().find(|s| s.dir == *dir) {
+            Some(s) => println!("\n{}  (root: {})", dir.display(), s.root.display()),
+            None => println!("\n{}", dir.display()),
+        }
         if !dir.is_dir() {
             println!("  (directory does not exist)");
             continue;
         }
-        for f in watcher::list_files(dir).iter().filter(|f| !is_ignorable(f)) {
+        let files: Vec<_> = watcher::list_files(dir)
+            .into_iter()
+            .filter(|f| !is_ignorable(f))
+            .collect();
+        let plans: Vec<_> = files.iter().map(|f| plan(cfg, f)).collect();
+        // One classification per distinct choices list, only with --ai.
+        let ai_idx: Vec<usize> = (0..plans.len())
+            .filter(|&i| ai_on && matches!(&plans[i], Ok(Some(p)) if !p.ai_choices.is_empty()))
+            .collect();
+        let mut choice = vec![None; plans.len()];
+        if use_ai && !ai_idx.is_empty() {
+            let refs: Vec<&Plan> = ai_idx
+                .iter()
+                .filter_map(|&i| plans[i].as_ref().ok().and_then(|p| p.as_ref()))
+                .collect();
+            for (&i, c) in ai_idx.iter().zip(ai::resolve(cfg, &mut gate, &refs)) {
+                choice[i] = c;
+            }
+        }
+        for (i, (f, p)) in files.iter().zip(&plans).enumerate() {
             let name = f.file_name().unwrap_or_default().to_string_lossy();
-            match plan(cfg, f) {
+            match p {
+                Ok(Some(p)) if ai_idx.contains(&i) && !use_ai => {
+                    let dir = p.dest.parent().unwrap_or(&p.dest).join("{ai?}");
+                    println!("  {name} -> {} -> {}/{name}", p.rule, dir.display());
+                }
+                Ok(Some(p)) if ai_idx.contains(&i) => {
+                    let chosen = choice[i].as_deref();
+                    match plan_with_choice(cfg, f, chosen) {
+                        Ok(Some(q)) => println!(
+                            "  {name} -> {} -> {}  [AI: {}]",
+                            q.rule,
+                            q.dest.display(),
+                            chosen.unwrap_or("no choice")
+                        ),
+                        _ => println!("  {name} -> {} -> {}", p.rule, p.dest.display()),
+                    }
+                }
                 Ok(Some(p)) => println!("  {name} -> {} -> {}", p.rule, p.dest.display()),
                 Ok(None) => println!("  {name} -> (no match)"),
                 Err(e) => println!("  {name} -> error: {e:#}"),

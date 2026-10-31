@@ -11,7 +11,33 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  helper:
+    # Foundation Models needs the macOS 26 SDK; arm64 only.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build tgsort-ai (arm64)
+        working-directory: helpers/tgsort-ai
+        run: |
+          swift build -c release --arch arm64
+          bin="$(swift build -c release --arch arm64 --show-bin-path)/tgsort-ai"
+          "$bin" --self-test
+          cp "$bin" "$GITHUB_WORKSPACE/tgsort-ai"
+
+      - name: Ad-hoc codesign
+        run: |
+          codesign --force --sign - tgsort-ai
+          codesign --verify --verbose tgsort-ai
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tgsort-ai
+          path: tgsort-ai
+          if-no-files-found: error
+
   release:
+    needs: helper
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -52,12 +78,17 @@ jobs:
           codesign --force --sign - tgsort
           codesign --verify --verbose tgsort
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: tgsort-ai
+
       - name: Package
         env:
           TAG: ${{ github.ref_name }}
         run: |
           name="tgsort-${TAG}-macos-universal"
-          tar -czf "${name}.tar.gz" tgsort README.md LICENSE config.example.toml
+          chmod +x tgsort-ai
+          tar -czf "${name}.tar.gz" tgsort tgsort-ai README.md LICENSE config.example.toml
           shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256"
           cat "${name}.tar.gz.sha256"
 

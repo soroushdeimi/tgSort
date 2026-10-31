@@ -85,3 +85,32 @@ tgsort uninstall   # unloads and removes ~/Library/LaunchAgents/com.tgsort.agent
 ```
 
 Optionally delete `~/.config/tgsort/` and the log file as well.
+
+## AI classification (optional)
+
+`tgsort-ai` is a small helper that lets tgsort ask Apple's on-device language
+model to pick the best folder for a file, using its name plus a short excerpt of
+its content (the first two pages of a PDF, or the start of a text file).
+
+- **Requirements:** Apple Silicon, macOS 26 or newer, Apple Intelligence turned
+  on (System Settings > Apple Intelligence & Siri). Intel Macs are not supported.
+- **Privacy:** everything runs on the device through Apple's Foundation Models
+  framework. File names and contents are never sent anywhere.
+- **Cost:** the helper is started only when needed and exits afterwards; nothing
+  stays resident.
+
+Install it next to tgsort (the release tarball contains it, or build it with
+`cd helpers/tgsort-ai && swift build -c release --arch arm64`):
+
+```sh
+mkdir -p ~/.local/bin
+rm -f ~/.local/bin/tgsort-ai && cp tgsort-ai ~/.local/bin/    # from the tarball
+# from source: cp "$(swift build -c release --arch arm64 --show-bin-path)/tgsort-ai" ~/.local/bin/
+xattr -d com.apple.quarantine ~/.local/bin/tgsort-ai 2>/dev/null || true
+~/.local/bin/tgsort-ai --check      # {"available": true} when ready
+```
+
+Enable it in `~/.config/tgsort/config.toml` (see `config.example.toml` for the
+current option names) and give each AI-sorted folder a short hint so the model
+knows what belongs there. When the model is unsure or unavailable, files fall
+back to your normal rules.

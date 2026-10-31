@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, ensure, Context, Result};
 use chrono::{DateTime, Datelike, Local};
 use regex::Regex;
+use serde::Serialize;
 
 use crate::config::expand_tilde;
 use crate::{Config, Rule};
@@ -21,12 +22,48 @@ const TEMP_EXTS: [&str; 7] = [
 ];
 const MB: f64 = 1024.0 * 1024.0;
 
+/// One candidate folder for the `{ai}` placeholder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AiChoice {
+    pub name: String,
+    pub hint: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Plan {
     pub rule: String,
     pub source: PathBuf,
     /// Full target file path.
     pub dest: PathBuf,
+    /// Choices for the rule's `{ai}` segment; empty when the rule doesn't use AI.
+    /// `dest` is then the fallback (segment dropped) unless planned with a choice.
+    pub ai_choices: Vec<AiChoice>,
+}
+
+const ROOT: &str = "{root}";
+
+/// `(starts_with_root, remainder_without_leading_slash)`.
+fn split_root(tpl: &str) -> (bool, &str) {
+    match tpl.strip_prefix(ROOT) {
+        Some("") => (true, ""),
+        Some(r) if r.starts_with('/') => (true, r.trim_start_matches('/')),
+        _ => (false, tpl),
+    }
+}
+
+const AI_SEGMENT: &str = "{ai}";
+
+/// True if the template has a `{ai}` path segment.
+pub(crate) fn dest_uses_ai(tpl: &str) -> bool {
+    tpl.split('/').any(|s| s == AI_SEGMENT)
+}
+
+/// Drops every `{ai}` segment (keeping it for `keep`, to be rendered later).
+fn drop_ai(tpl: &str) -> String {
+    tpl.split('/')
+        .filter(|s| *s != AI_SEGMENT)
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// Hidden files, `.DS_Store`, directories and partial/temporary downloads.
@@ -44,6 +81,12 @@ pub fn is_ignorable(path: &Path) -> bool {
 
 /// Decides where `file` should go. `None` = ignorable, or nothing matched and no fallback.
 pub fn plan(cfg: &Config, file: &Path) -> Result<Option<Plan>> {
+    plan_with_choice(cfg, file, None)
+}
+
+/// Like [`plan`], but fills the rule's `{ai}` segment with `choice`. A choice that is not one
+/// of the rule's names is treated as `None` (segment dropped).
+pub fn plan_with_choice(cfg: &Config, file: &Path, choice: Option<&str>) -> Result<Option<Plan>> {
     if is_ignorable(file) {
         return Ok(None);
     }
@@ -55,17 +98,23 @@ pub fn plan(cfg: &Config, file: &Path) -> Result<Option<Plan>> {
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
 
-    let (rule, tpl, re) = match cfg
+    let (rule, tpl, re, choices) = match cfg
         .rules
         .iter()
         .find(|r| r.matches(&name, &ext, meta.len()))
     {
-        Some(r) => (r.name.as_str(), r.dest.as_str(), r.name_regex.as_ref()),
+        Some(r) => (
+            r.name.as_str(),
+            r.dest.as_str(),
+            r.name_regex.as_ref(),
+            r.ai_choices.as_slice(),
+        ),
         None => match &cfg.fallback_dest {
-            Some(d) => ("fallback", d.as_str(), None),
+            Some(d) => ("fallback", d.as_str(), None, &[][..]),
             None => return Ok(None),
         },
     };
+    let choice = choice.filter(|c| choices.iter().any(|x| x.name == *c));
 
     let when: DateTime<Local> = meta.modified().context("no modification time")?.into();
     let mut vars: HashMap<String, String> = HashMap::from([
@@ -94,7 +143,22 @@ pub fn plan(cfg: &Config, file: &Path) -> Result<Option<Plan>> {
         }
     }
 
-    let dir = expand_tilde(&render(tpl, &vars)?)?;
+    let tpl = match choice {
+        Some(c) => {
+            vars.insert("ai".into(), c.into());
+            tpl.to_string()
+        }
+        None => drop_ai(tpl),
+    };
+    let (has_root, rest) = split_root(&tpl);
+    let dir = if has_root {
+        let src = cfg
+            .source_for(file)
+            .with_context(|| format!("{} is not in a configured [[source]]", file.display()))?;
+        src.root.join(render(rest, &vars)?)
+    } else {
+        expand_tilde(&render(&tpl, &vars)?)?
+    };
     ensure!(
         dir.is_absolute(),
         "destination {} is not absolute",
@@ -104,6 +168,7 @@ pub fn plan(cfg: &Config, file: &Path) -> Result<Option<Plan>> {
         rule: rule.into(),
         source: file.into(),
         dest: dir.join(file_name),
+        ai_choices: choices.to_vec(),
     }))
 }
 
@@ -146,7 +211,27 @@ pub(crate) fn render(tpl: &str, vars: &HashMap<String, String>) -> Result<String
 }
 
 /// Config-time check: placeholders known (built-ins + named groups) and result absolute.
-pub(crate) fn check_template(tpl: &str, re: Option<&Regex>) -> Result<()> {
+pub(crate) fn check_template(tpl: &str, re: Option<&Regex>, ai: bool, roots: bool) -> Result<()> {
+    if tpl.contains(ROOT) {
+        ensure!(
+            roots,
+            "{{root}} needs [[source]] entries (not watch_dirs) in {tpl:?}"
+        );
+        ensure!(
+            split_root(tpl).0 && !split_root(tpl).1.contains(ROOT),
+            "{{root}} must be the first path segment in {tpl:?}"
+        );
+        let rest = split_root(tpl).1;
+        return check_template(&format!("/x/{rest}"), re, ai, false);
+    }
+    if ai {
+        for seg in tpl.split('/') {
+            ensure!(
+                seg == AI_SEGMENT || !seg.contains(AI_SEGMENT),
+                "{{ai}} must be an entire path segment in {tpl:?}"
+            );
+        }
+    }
     let mut vars: HashMap<String, String> = BUILTINS
         .iter()
         .map(|k| (k.to_string(), "x".to_string()))
@@ -157,6 +242,16 @@ pub(crate) fn check_template(tpl: &str, re: Option<&Regex>) -> Result<()> {
             "capture group {n:?} collides with a built-in placeholder"
         );
         vars.insert(n.into(), "x".into());
+    }
+    if ai {
+        // The fallback (segment dropped) must be valid on its own, too.
+        let dropped = drop_ai(tpl);
+        let dir = expand_tilde(&render(&dropped, &vars)?)?;
+        ensure!(
+            dir.is_absolute(),
+            "{tpl:?} must stay absolute when {{ai}} is dropped"
+        );
+        vars.insert("ai".into(), "x".into());
     }
     let dir = expand_tilde(&render(tpl, &vars)?)?;
     ensure!(
@@ -331,6 +426,111 @@ mod tests {
         );
         let (_, p) = dest_of(&c, &touch(d.path(), "a.mp4", 1)).unwrap();
         assert_eq!(p, dirs::home_dir().unwrap().join("Movies/x/a.mp4"));
+    }
+
+    const AI_CFG: &str = "[[rule]]\nname='Docs'\nextensions=['pdf']\n\
+        dest='ROOT/{ext}/{ai}'\nai_choices=[{name='Papers',hint='p'},{name='Books',hint='b'}]";
+
+    #[test]
+    fn ai_plan_falls_back_without_segment() {
+        let d = tempfile::tempdir().unwrap();
+        let c = cfg(AI_CFG, d.path());
+        let f = touch(d.path(), "a.pdf", 1);
+        let p = plan(&c, &f).unwrap().unwrap();
+        assert_eq!(p.dest, d.path().join("pdf/a.pdf"));
+        assert_eq!(p.ai_choices.len(), 2);
+        assert_eq!(p.ai_choices[0].name, "Papers");
+        // non-AI rules carry no choices
+        let c2 = cfg(
+            "[[rule]]\nname='V'\nextensions=['pdf']\ndest='ROOT/v'",
+            d.path(),
+        );
+        assert!(plan(&c2, &f).unwrap().unwrap().ai_choices.is_empty());
+    }
+
+    #[test]
+    fn plan_with_choice_fills_segment() {
+        let d = tempfile::tempdir().unwrap();
+        let c = cfg(AI_CFG, d.path());
+        let f = touch(d.path(), "a.pdf", 1);
+        let p = plan_with_choice(&c, &f, Some("Books")).unwrap().unwrap();
+        assert_eq!(p.dest, d.path().join("pdf/Books/a.pdf"));
+        assert_eq!(p.ai_choices.len(), 2);
+        for bad in [Some("Nope"), Some("books"), Some("../x"), Some(""), None] {
+            let p = plan_with_choice(&c, &f, bad).unwrap().unwrap();
+            assert_eq!(p.dest, d.path().join("pdf/a.pdf"), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn ai_segment_in_the_middle_and_fallback_rule() {
+        let d = tempfile::tempdir().unwrap();
+        let c = cfg(
+            "fallback_dest='ROOT/other'\n[[rule]]\nname='Docs'\nextensions=['pdf']\n\
+             dest='ROOT/{ai}/{ext}'\nai_choices=[{name='P'}]",
+            d.path(),
+        );
+        let f = touch(d.path(), "a.pdf", 1);
+        let p = plan_with_choice(&c, &f, Some("P")).unwrap().unwrap();
+        assert_eq!(p.dest, d.path().join("P/pdf/a.pdf"));
+        assert_eq!(
+            plan(&c, &f).unwrap().unwrap().dest,
+            d.path().join("pdf/a.pdf")
+        );
+        // choice is ignored for rules without AI (fallback rule)
+        let g = touch(d.path(), "b.zip", 1);
+        let p = plan_with_choice(&c, &g, Some("P")).unwrap().unwrap();
+        assert_eq!(p.dest, d.path().join("other/b.zip"));
+        assert!(p.ai_choices.is_empty());
+    }
+
+    #[test]
+    fn root_placeholder_uses_the_files_source() {
+        let d = tempfile::tempdir().unwrap();
+        let dl = d.path().join("Downloads");
+        let tg = dl.join("Telegram Desktop");
+        fs::create_dir_all(&tg).unwrap();
+        let c = cfg(
+            &format!(
+                "fallback_dest='{{root}}/Other/{{ext}}'\n\
+                 [[source]]\ndir='{}'\nroot='ROOT/tg'\n[[source]]\ndir='{}'\nroot='ROOT/dl'\n\
+                 [[rule]]\nname='Docs'\nextensions=['pdf']\ndest='{{root}}/Docs/{{ext}}/{{ai}}'\n\
+                 ai_choices=[{{name='P'}}]\n\
+                 [[rule]]\nname='Inst'\nextensions=['dmg']\ndest='{{root}}/Installers'",
+                tg.display(),
+                dl.display()
+            ),
+            d.path(),
+        );
+        let (a, b) = (touch(&tg, "a.pdf", 1), touch(&dl, "a.pdf", 1));
+        assert_eq!(
+            dest_of(&c, &a).unwrap().1,
+            d.path().join("tg/Docs/pdf/a.pdf")
+        );
+        assert_eq!(
+            dest_of(&c, &b).unwrap().1,
+            d.path().join("dl/Docs/pdf/a.pdf")
+        );
+        let p = plan_with_choice(&c, &b, Some("P")).unwrap().unwrap();
+        assert_eq!(p.dest, d.path().join("dl/Docs/pdf/P/a.pdf"));
+        let m = touch(&dl, "x.dmg", 1);
+        assert_eq!(
+            dest_of(&c, &m).unwrap().1,
+            d.path().join("dl/Installers/x.dmg")
+        );
+        let z = touch(&tg, "z.zip", 1);
+        assert_eq!(
+            dest_of(&c, &z).unwrap().1,
+            d.path().join("tg/Other/zip/z.zip")
+        );
+        // the nested source dir is a directory in the parent source: never planned/moved
+        assert!(plan(&c, &tg).unwrap().is_none());
+        // file outside every source cannot resolve {root}
+        let out = tempfile::tempdir().unwrap();
+        assert!(plan(&c, &touch(out.path(), "o.pdf", 1)).is_err());
+        // source_for is an exact parent match
+        assert_eq!(c.source_for(&a).unwrap().root, d.path().join("tg"));
+        assert_eq!(c.source_for(&b).unwrap().root, d.path().join("dl"));
     }
 
     #[test]

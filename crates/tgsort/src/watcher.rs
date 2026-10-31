@@ -1,5 +1,5 @@
 use crate::{
-    notifier,
+    ai, notifier,
     pending::{Pending, Snapshot},
 };
 use anyhow::Result;
@@ -12,7 +12,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
-use tgsort_core::{execute, is_ignorable, plan, Config, Outcome};
+use tgsort_core::{execute, is_ignorable, plan, plan_with_choice, Config, Outcome, Plan};
 
 const RESCAN: Duration = Duration::from_secs(300);
 const MIN_SLEEP: Duration = Duration::from_millis(50);
@@ -62,23 +62,21 @@ fn is_open(path: &Path) -> bool {
     }
 }
 
-fn process(cfg: &Config, file: &Path, dry_run: bool) -> Result<Res> {
-    let name = file
+/// Executes (or, in dry-run, just logs) one finished plan.
+fn finish(cfg: &Config, p: &Plan, dry_run: bool) -> Result<Res> {
+    let name = p
+        .source
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let Some(p) = plan(cfg, file)? else {
-        debug!("{name}: no matching rule, leaving in place");
-        return Ok(Res::Left);
-    };
     if dry_run {
         info!("[dry-run] {name} -> {} -> {}", p.rule, p.dest.display());
         return Ok(Res::Left);
     }
-    match execute(cfg, &p)? {
+    match execute(cfg, p)? {
         Outcome::Moved(d) => {
             info!("moved {name} -> {} [{}]", d.display(), p.rule);
-            Ok(Res::Moved(cfg.notify.then_some((name, p.rule))))
+            Ok(Res::Moved(cfg.notify.then_some((name, p.rule.clone()))))
         }
         Outcome::DuplicateSkipped(d) => {
             info!(
@@ -95,10 +93,52 @@ fn process(cfg: &Config, file: &Path, dry_run: bool) -> Result<Res> {
     }
 }
 
+/// Processes a batch of ready files; results are index-aligned with `files`.
+/// Plain files are moved first; files whose rule uses `{ai}` share one classification call
+/// per distinct choices list (none at all while the helper is unavailable).
+fn process_many(
+    cfg: &Config,
+    files: &[PathBuf],
+    dry_run: bool,
+    gate: &mut ai::Gate,
+) -> Vec<Result<Res>> {
+    let mut results: Vec<Option<Result<Res>>> = files.iter().map(|_| None).collect();
+    let mut ai_jobs: Vec<(usize, Plan)> = Vec::new();
+    for (i, f) in files.iter().enumerate() {
+        results[i] = match plan(cfg, f) {
+            Err(e) => Some(Err(e)),
+            Ok(None) => {
+                debug!("{}: no matching rule, leaving in place", f.display());
+                Some(Ok(Res::Left))
+            }
+            Ok(Some(p)) if cfg.ai_enabled && !p.ai_choices.is_empty() => {
+                ai_jobs.push((i, p));
+                None
+            }
+            Ok(Some(p)) => Some(finish(cfg, &p, dry_run)),
+        };
+    }
+    if !ai_jobs.is_empty() {
+        let plans: Vec<&Plan> = ai_jobs.iter().map(|(_, p)| p).collect();
+        let choices = ai::resolve(cfg, gate, &plans);
+        for ((i, fallback), choice) in ai_jobs.iter().zip(choices) {
+            results[*i] = Some(match choice {
+                None => finish(cfg, fallback, dry_run),
+                Some(c) => plan_with_choice(cfg, &files[*i], Some(&c)).and_then(|p| {
+                    let mut p = p.unwrap_or_else(|| fallback.clone());
+                    p.rule = format!("{}/{c}", p.rule);
+                    finish(cfg, &p, dry_run)
+                }),
+            });
+        }
+    }
+    results.into_iter().map(|r| r.expect("filled")).collect()
+}
+
 /// One-shot pass over files whose mtime is at least `settle_secs` old.
 pub fn once(cfg: &Config, dry_run: bool) {
     let settle = Duration::from_secs(cfg.settle_secs);
-    let mut moved = Vec::new();
+    let mut ready = Vec::new();
     for dir in &cfg.watch_dirs {
         if !dir.is_dir() {
             warn!("watch dir {} does not exist", dir.display());
@@ -120,11 +160,19 @@ pub fn once(cfg: &Config, dry_run: bool) {
                 debug!("{}: still open by another process, skipping", f.display());
                 continue;
             }
-            match process(cfg, &f, dry_run) {
-                Ok(Res::Moved(m)) => moved.extend(m),
-                Ok(Res::Left) => {}
-                Err(e) => warn!("{}: {e:#}", f.display()),
-            }
+            ready.push(f);
+        }
+    }
+    let mut moved = Vec::new();
+    let mut gate = ai::Gate::default();
+    for (f, r) in ready
+        .iter()
+        .zip(process_many(cfg, &ready, dry_run, &mut gate))
+    {
+        match r {
+            Ok(Res::Moved(m)) => moved.extend(m),
+            Ok(Res::Left) => {}
+            Err(e) => warn!("{}: {e:#}", f.display()),
         }
     }
     notifier::notify_all(&moved);
@@ -136,6 +184,7 @@ struct Daemon<'a> {
     pending: Pending,
     /// (canonical, configured) per watch dir, to map FSEvents paths back.
     dirs: Vec<(PathBuf, PathBuf)>,
+    gate: ai::Gate,
 }
 
 impl Daemon<'_> {
@@ -185,6 +234,7 @@ impl Daemon<'_> {
             self.pending.observe(&p, snapshot(&p), now);
         }
         let mut moved = Vec::new();
+        let mut files = Vec::new();
         for f in self
             .pending
             .ready(Duration::from_secs(self.cfg.settle_secs), now)
@@ -195,20 +245,24 @@ impl Daemon<'_> {
                     f.display()
                 );
                 self.pending.touch(&f, now);
-                continue;
+            } else {
+                files.push(f);
             }
-            match process(self.cfg, &f, self.dry_run) {
+        }
+        let results = process_many(self.cfg, &files, self.dry_run, &mut self.gate);
+        for (f, r) in files.iter().zip(results) {
+            match r {
                 Ok(Res::Moved(m)) => {
                     moved.extend(m);
-                    self.pending.remove(&f);
+                    self.pending.remove(f);
                 }
-                Ok(Res::Left) => self.pending.handled(&f),
+                Ok(Res::Left) => self.pending.handled(f),
                 Err(e) => {
                     warn!(
                         "{}: {e:#} (will retry if it changes or in 5 min)",
                         f.display()
                     );
-                    self.pending.failed(&f, now);
+                    self.pending.failed(f, now);
                 }
             }
         }
@@ -246,6 +300,7 @@ pub fn run(cfg: &Config, dry_run: bool) -> Result<()> {
         dry_run,
         pending: Pending::default(),
         dirs: Vec::new(),
+        gate: ai::Gate::default(),
     };
     let (mut watched, mut warned) = (HashSet::new(), HashSet::new());
     let refresh = |d: &mut Daemon,
@@ -263,6 +318,9 @@ pub fn run(cfg: &Config, dry_run: bool) -> Result<()> {
     };
 
     info!("tgsort started{}", if dry_run { " (dry-run)" } else { "" });
+    if cfg.ai_enabled && cfg.uses_ai() {
+        d.gate.available(cfg); // logs availability once
+    }
     refresh(&mut d, &mut watcher, &mut watched, &mut warned);
     d.rescan(Instant::now());
     let settle = Duration::from_secs(cfg.settle_secs);
@@ -297,5 +355,40 @@ pub fn run(cfg: &Config, dry_run: bool) -> Result<()> {
             refresh(&mut d, &mut watcher, &mut watched, &mut warned);
             d.rescan(now);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nested_source_dir_is_never_listed_or_planned_by_its_parent() {
+        let d = tempfile::tempdir().unwrap();
+        let dl = d.path().join("Downloads");
+        let tg = dl.join("Telegram Desktop");
+        std::fs::create_dir_all(&tg).unwrap();
+        std::fs::create_dir_all(dl.join("Docs/pdf")).unwrap(); // a created destination folder
+        std::fs::write(dl.join("a.pdf"), "x").unwrap();
+        std::fs::write(tg.join("b.pdf"), "x").unwrap();
+        std::fs::write(dl.join("Docs/pdf/c.pdf"), "x").unwrap();
+        assert_eq!(list_files(&dl), vec![dl.join("a.pdf")]);
+        assert_eq!(list_files(&tg), vec![tg.join("b.pdf")]);
+
+        let cfg = Config::parse(&format!(
+            "[[source]]\ndir='{}'\nroot='{}'\n[[source]]\ndir='{}'\nroot='{}'\n\
+             [[rule]]\nname='D'\nextensions=['pdf']\ndest='{{root}}/Docs/{{ext}}'",
+            tg.display(),
+            d.path().join("T").display(),
+            dl.display(),
+            dl.display()
+        ))
+        .unwrap();
+        // The directory itself is ignorable, so it can never be moved.
+        assert!(plan(&cfg, &tg).unwrap().is_none());
+        let p = plan(&cfg, &dl.join("a.pdf")).unwrap().unwrap();
+        assert_eq!(p.dest, dl.join("Docs/pdf/a.pdf"));
+        let p = plan(&cfg, &tg.join("b.pdf")).unwrap().unwrap();
+        assert_eq!(p.dest, d.path().join("T/Docs/pdf/b.pdf"));
     }
 }

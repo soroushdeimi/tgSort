@@ -36,3 +36,25 @@ jobs:
 
       - name: Test
         run: cargo test --workspace --locked
+
+  # Separate job: Foundation Models needs the macOS 26 SDK (Xcode 26+), which
+  # the macos-latest image may not ship. A failure here does not affect `check`.
+  helper:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Build tgsort-ai (arm64)
+        working-directory: helpers/tgsort-ai
+        run: swift build -c release --arch arm64
+
+      - name: Self-test
+        working-directory: helpers/tgsort-ai
+        run: |
+          bin="$(swift build -c release --arch arm64 --show-bin-path)/tgsort-ai"
+          "$bin" --self-test

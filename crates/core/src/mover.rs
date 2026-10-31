@@ -174,6 +174,7 @@ mod tests {
             rule: "t".into(),
             source,
             dest,
+            ai_choices: Vec::new(),
         }
     }
 
