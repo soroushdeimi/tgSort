@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Verify tag matches package version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "tgsort") | .version')
+          if [ "${TAG#v}" != "$version" ]; then
+            echo "::error::tag $TAG does not match tgsort package version $version"
+            exit 1
+          fi
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Build
+        run: |
+          cargo build --release --locked -p tgsort --target aarch64-apple-darwin
+          cargo build --release --locked -p tgsort --target x86_64-apple-darwin
+
+      - name: Create universal binary
+        run: |
+          lipo -create \
+            target/aarch64-apple-darwin/release/tgsort \
+            target/x86_64-apple-darwin/release/tgsort \
+            -output tgsort
+          lipo -info tgsort
+          # lipo invalidates the linker's ad-hoc signature on arm64
+          codesign --force --sign - tgsort
+          codesign --verify --verbose tgsort
+
+      - name: Package
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          name="tgsort-${TAG}-macos-universal"
+          tar -czf "${name}.tar.gz" tgsort README.md LICENSE config.example.toml
+          shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256"
+          cat "${name}.tar.gz.sha256"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          name="tgsort-${TAG}-macos-universal"
+          gh release create "$TAG" \
+            "${name}.tar.gz" "${name}.tar.gz.sha256" \
+            --title "tgsort $TAG" --generate-notes

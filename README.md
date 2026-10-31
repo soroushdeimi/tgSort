@@ -20,6 +20,24 @@ With the example config, everything from Telegram ends up in one place:
 └── Other/<ext>/        anything no rule matches (no-ext/ for files without one)
 ```
 
+## Install
+
+Download `tgsort-<tag>-macos-universal.tar.gz` (and its `.sha256`) from the
+[latest release](https://github.com/soroushdeimi/tgSort/releases), then:
+
+```sh
+shasum -a 256 -c tgsort-*-macos-universal.tar.gz.sha256
+tar -xzf tgsort-*-macos-universal.tar.gz
+# the binary isn't notarized, so Gatekeeper blocks it unless you clear the quarantine flag
+xattr -d com.apple.quarantine tgsort 2>/dev/null || true
+mkdir -p ~/.local/bin && rm -f ~/.local/bin/tgsort && cp tgsort ~/.local/bin/
+~/.local/bin/tgsort init
+~/.local/bin/tgsort check
+~/.local/bin/tgsort install
+```
+
+Or build from source (see below).
+
 ## Build
 
 ```sh

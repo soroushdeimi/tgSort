@@ -79,7 +79,10 @@ impl Config {
             .iter()
             .map(|d| {
                 let p = expand_tilde(d)?;
-                ensure!(p.is_absolute(), "watch dir {d:?} must be absolute or start with ~");
+                ensure!(
+                    p.is_absolute(),
+                    "watch dir {d:?} must be absolute or start with ~"
+                );
                 Ok(p)
             })
             .collect::<Result<Vec<_>>>()?;
@@ -116,7 +119,11 @@ impl Config {
 
 impl Rule {
     fn build(idx: usize, r: RawRule) -> Result<Rule> {
-        let label = if r.name.is_empty() { format!("#{}", idx + 1) } else { r.name.clone() };
+        let label = if r.name.is_empty() {
+            format!("#{}", idx + 1)
+        } else {
+            r.name.clone()
+        };
         Self::build_inner(r).with_context(|| format!("rule {label}"))
     }
 
@@ -138,9 +145,15 @@ impl Rule {
             .as_deref()
             .map(|s| Regex::new(s).with_context(|| format!("invalid name_regex {s:?}")))
             .transpose()?;
-        for (k, v) in [("min_size_mb", r.min_size_mb), ("max_size_mb", r.max_size_mb)] {
+        for (k, v) in [
+            ("min_size_mb", r.min_size_mb),
+            ("max_size_mb", r.max_size_mb),
+        ] {
             if let Some(v) = v {
-                ensure!(v.is_finite() && v >= 0.0, "{k} must be a non-negative number");
+                ensure!(
+                    v.is_finite() && v >= 0.0,
+                    "{k} must be a non-negative number"
+                );
             }
         }
         if let (Some(lo), Some(hi)) = (r.min_size_mb, r.max_size_mb) {
@@ -167,9 +180,15 @@ impl Rule {
 
 /// Expands a leading `~` or `~/` to the home directory.
 pub(crate) fn expand_tilde(s: &str) -> Result<PathBuf> {
-    let rest = if s == "~" { Some("") } else { s.strip_prefix("~/") };
+    let rest = if s == "~" {
+        Some("")
+    } else {
+        s.strip_prefix("~/")
+    };
     match rest {
-        Some(r) => Ok(dirs::home_dir().context("cannot determine home directory")?.join(r)),
+        Some(r) => Ok(dirs::home_dir()
+            .context("cannot determine home directory")?
+            .join(r)),
         None => Ok(PathBuf::from(s)),
     }
 }
@@ -218,7 +237,10 @@ mod tests {
         .unwrap();
         assert_eq!(c.watch_dirs[0], PathBuf::from("/tmp/a"));
         assert_eq!(c.watch_dirs[1], dirs::home_dir().unwrap().join("b"));
-        assert_eq!((c.settle_secs, c.notify, c.delete_duplicates), (9, false, true));
+        assert_eq!(
+            (c.settle_secs, c.notify, c.delete_duplicates),
+            (9, false, true)
+        );
         assert_eq!(c.rules.len(), 2);
         assert_eq!(c.rules[0].extensions, ["mp4", "mkv"]);
         assert_eq!(c.rules[0].max_size_mb, Some(2.5));
@@ -252,15 +274,20 @@ mod tests {
         assert!(err("[[rule]]\nname='a'\ndest='/t'").contains("at least one matcher"));
         assert!(err("[[rule]]\nextensions=['x']\ndest='/t'").contains("missing name"));
         assert!(err("[[rule]]\nname='a'\nname_regex='('\ndest='/t'").contains("invalid name_regex"));
-        assert!(err("[[rule]]\nname='a'\nextensions=['x']\ndest='/t/{nope}'")
-            .contains("unknown or empty placeholder {nope}"));
+        assert!(
+            err("[[rule]]\nname='a'\nextensions=['x']\ndest='/t/{nope}'")
+                .contains("unknown or empty placeholder {nope}")
+        );
         assert!(err("[[rule]]\nname='a'\nextensions=['x']\ndest='/t/{year'").contains("unclosed"));
         assert!(err("[[rule]]\nname='a'\nextensions=['x']\ndest='rel/dir'").contains("absolute"));
-        assert!(err("[[rule]]\nname='a'\nmin_size_mb=5\nmax_size_mb=1\ndest='/t'")
-            .contains("greater than"));
+        assert!(
+            err("[[rule]]\nname='a'\nmin_size_mb=5\nmax_size_mb=1\ndest='/t'")
+                .contains("greater than")
+        );
         assert!(err("[[rule]]\nname='a'\nextensions=['x']\ndest='/t'\nbogus=1").contains("bogus"));
-        assert!(err("[[rule]]\nname='a'\nname_regex='(?P<year>.)'\ndest='/t'")
-            .contains("collides"));
+        assert!(
+            err("[[rule]]\nname='a'\nname_regex='(?P<year>.)'\ndest='/t'").contains("collides")
+        );
         assert!(err("fallback_dest = '/t/{series}'").contains("fallback_dest"));
         assert!(err("watch_dirs = []").contains("watch_dirs"));
         assert!(err("watch_dirs = ['relative']").contains("absolute"));

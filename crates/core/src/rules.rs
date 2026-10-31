@@ -10,7 +10,15 @@ use crate::config::expand_tilde;
 use crate::{Config, Rule};
 
 const BUILTINS: [&str; 5] = ["year", "month", "day", "ext", "stem"];
-const TEMP_EXTS: [&str; 7] = ["part", "partial", "tmp", "temp", "crdownload", "download", "!qb"];
+const TEMP_EXTS: [&str; 7] = [
+    "part",
+    "partial",
+    "tmp",
+    "temp",
+    "crdownload",
+    "download",
+    "!qb",
+];
 const MB: f64 = 1024.0 * 1024.0;
 
 #[derive(Debug, Clone)]
@@ -47,7 +55,11 @@ pub fn plan(cfg: &Config, file: &Path) -> Result<Option<Plan>> {
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
 
-    let (rule, tpl, re) = match cfg.rules.iter().find(|r| r.matches(&name, &ext, meta.len())) {
+    let (rule, tpl, re) = match cfg
+        .rules
+        .iter()
+        .find(|r| r.matches(&name, &ext, meta.len()))
+    {
         Some(r) => (r.name.as_str(), r.dest.as_str(), r.name_regex.as_ref()),
         None => match &cfg.fallback_dest {
             Some(d) => ("fallback", d.as_str(), None),
@@ -60,10 +72,15 @@ pub fn plan(cfg: &Config, file: &Path) -> Result<Option<Plan>> {
         ("year".into(), format!("{:04}", when.year())),
         ("month".into(), format!("{:02}", when.month())),
         ("day".into(), format!("{:02}", when.day())),
-        ("ext".into(), if ext.is_empty() { "no-ext".into() } else { ext }),
+        (
+            "ext".into(),
+            if ext.is_empty() { "no-ext".into() } else { ext },
+        ),
         (
             "stem".into(),
-            file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
+            file.file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default(),
         ),
     ]);
     if let Some(caps) = re.and_then(|re| re.captures(&name).map(|c| (re, c))) {
@@ -78,8 +95,16 @@ pub fn plan(cfg: &Config, file: &Path) -> Result<Option<Plan>> {
     }
 
     let dir = expand_tilde(&render(tpl, &vars)?)?;
-    ensure!(dir.is_absolute(), "destination {} is not absolute", dir.display());
-    Ok(Some(Plan { rule: rule.into(), source: file.into(), dest: dir.join(file_name) }))
+    ensure!(
+        dir.is_absolute(),
+        "destination {} is not absolute",
+        dir.display()
+    );
+    Ok(Some(Plan {
+        rule: rule.into(),
+        source: file.into(),
+        dest: dir.join(file_name),
+    }))
 }
 
 impl Rule {
@@ -98,13 +123,18 @@ pub(crate) fn render(tpl: &str, vars: &HashMap<String, String>) -> Result<String
     let mut rest = tpl;
     while let Some(i) = rest.find(['{', '}']) {
         out.push_str(&rest[..i]);
-        ensure!(rest.as_bytes()[i] == b'{', "unmatched '}}' in template {tpl:?}");
+        ensure!(
+            rest.as_bytes()[i] == b'{',
+            "unmatched '}}' in template {tpl:?}"
+        );
         let after = &rest[i + 1..];
-        let j = after.find('}').with_context(|| format!("unclosed '{{' in template {tpl:?}"))?;
+        let j = after
+            .find('}')
+            .with_context(|| format!("unclosed '{{' in template {tpl:?}"))?;
         let key = &after[..j];
-        let v = vars
-            .get(key)
-            .with_context(|| format!("unknown or empty placeholder {{{key}}} in template {tpl:?}"))?;
+        let v = vars.get(key).with_context(|| {
+            format!("unknown or empty placeholder {{{key}}} in template {tpl:?}")
+        })?;
         if v.is_empty() || v.contains(['/', '\0']) || v == ".." || v == "." {
             bail!("unsafe value {v:?} for placeholder {{{key}}}");
         }
@@ -117,14 +147,22 @@ pub(crate) fn render(tpl: &str, vars: &HashMap<String, String>) -> Result<String
 
 /// Config-time check: placeholders known (built-ins + named groups) and result absolute.
 pub(crate) fn check_template(tpl: &str, re: Option<&Regex>) -> Result<()> {
-    let mut vars: HashMap<String, String> =
-        BUILTINS.iter().map(|k| (k.to_string(), "x".to_string())).collect();
+    let mut vars: HashMap<String, String> = BUILTINS
+        .iter()
+        .map(|k| (k.to_string(), "x".to_string()))
+        .collect();
     for n in re.into_iter().flat_map(|r| r.capture_names().flatten()) {
-        ensure!(!BUILTINS.contains(&n), "capture group {n:?} collides with a built-in placeholder");
+        ensure!(
+            !BUILTINS.contains(&n),
+            "capture group {n:?} collides with a built-in placeholder"
+        );
         vars.insert(n.into(), "x".into());
     }
     let dir = expand_tilde(&render(tpl, &vars)?)?;
-    ensure!(dir.is_absolute(), "{tpl:?} must be absolute or start with ~");
+    ensure!(
+        dir.is_absolute(),
+        "{tpl:?} must be absolute or start with ~"
+    );
     Ok(())
 }
 
@@ -151,8 +189,18 @@ mod tests {
     #[test]
     fn ignorable() {
         let d = tempfile::tempdir().unwrap();
-        for n in [".hidden", ".DS_Store", "a.part", "a.PARTIAL", "a.tmp", "a.temp", "a.crdownload",
-                  "a.download", "a.mp4.!qb", "~$doc.docx"] {
+        for n in [
+            ".hidden",
+            ".DS_Store",
+            "a.part",
+            "a.PARTIAL",
+            "a.tmp",
+            "a.temp",
+            "a.crdownload",
+            "a.download",
+            "a.mp4.!qb",
+            "~$doc.docx",
+        ] {
             assert!(is_ignorable(&d.path().join(n)), "{n}");
         }
         fs::create_dir(d.path().join("folder.mp4")).unwrap();
@@ -208,7 +256,10 @@ mod tests {
     #[test]
     fn fallback_and_ignorable_files() {
         let d = tempfile::tempdir().unwrap();
-        let c = cfg("fallback_dest='ROOT/other'\n[[rule]]\nname='V'\nextensions=['mp4']\ndest='ROOT/v'", d.path());
+        let c = cfg(
+            "fallback_dest='ROOT/other'\n[[rule]]\nname='V'\nextensions=['mp4']\ndest='ROOT/v'",
+            d.path(),
+        );
         let (r, p) = dest_of(&c, &touch(d.path(), "x.zip", 1)).unwrap();
         assert_eq!((r.as_str(), p), ("fallback", d.path().join("other/x.zip")));
         assert!(dest_of(&c, &touch(d.path(), "x.zip.part", 1)).is_none());
@@ -220,10 +271,19 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let f = touch(d.path(), "My.Clip.MP4", 1);
         let t = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
-        File::options().write(true).open(&f).unwrap().set_modified(t).unwrap();
+        File::options()
+            .write(true)
+            .open(&f)
+            .unwrap()
+            .set_modified(t)
+            .unwrap();
         let when: DateTime<Local> = t.into();
-        let c = cfg("[[rule]]\nname='V'\nextensions=['mp4']\ndest='ROOT/{year}/{month}/{day}/{ext}/{stem}'", d.path());
-        let want = d.path()
+        let c = cfg(
+            "[[rule]]\nname='V'\nextensions=['mp4']\ndest='ROOT/{year}/{month}/{day}/{ext}/{stem}'",
+            d.path(),
+        );
+        let want = d
+            .path()
             .join(when.format("%Y/%m/%d").to_string())
             .join("mp4/My.Clip/My.Clip.MP4");
         assert_eq!(dest_of(&c, &f).unwrap().1, want);
@@ -234,7 +294,10 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let c = cfg("fallback_dest='ROOT/other/{ext}'\n[[rule]]\nname='V'\nextensions=['mp4']\ndest='ROOT/v'", d.path());
         let (r, p) = dest_of(&c, &touch(d.path(), "README", 1)).unwrap();
-        assert_eq!((r.as_str(), p), ("fallback", d.path().join("other/no-ext/README")));
+        assert_eq!(
+            (r.as_str(), p),
+            ("fallback", d.path().join("other/no-ext/README"))
+        );
     }
 
     #[test]
@@ -251,7 +314,10 @@ mod tests {
     #[test]
     fn unmatched_optional_group_errors_in_plan() {
         let d = tempfile::tempdir().unwrap();
-        let c = cfg("[[rule]]\nname='S'\nname_regex='a(?P<x>b)?'\ndest='ROOT/{x}'", d.path());
+        let c = cfg(
+            "[[rule]]\nname='S'\nname_regex='a(?P<x>b)?'\ndest='ROOT/{x}'",
+            d.path(),
+        );
         let e = plan(&c, &touch(d.path(), "a.txt", 1)).unwrap_err();
         assert!(format!("{e:#}").contains("{x}"));
     }
@@ -259,7 +325,10 @@ mod tests {
     #[test]
     fn tilde_dest_is_expanded() {
         let d = tempfile::tempdir().unwrap();
-        let c = cfg("[[rule]]\nname='V'\nextensions=['mp4']\ndest='~/Movies/x'", d.path());
+        let c = cfg(
+            "[[rule]]\nname='V'\nextensions=['mp4']\ndest='~/Movies/x'",
+            d.path(),
+        );
         let (_, p) = dest_of(&c, &touch(d.path(), "a.mp4", 1)).unwrap();
         assert_eq!(p, dirs::home_dir().unwrap().join("Movies/x/a.mp4"));
     }

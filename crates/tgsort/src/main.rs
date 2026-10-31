@@ -9,7 +9,10 @@ use std::path::PathBuf;
 use tgsort_core::{is_ignorable, plan, Config};
 
 #[derive(Parser)]
-#[command(version, about = "Sort finished Telegram Desktop downloads into folders by rule")]
+#[command(
+    version,
+    about = "Sort finished Telegram Desktop downloads into folders by rule"
+)]
 struct Cli {
     /// Config file (default: ~/.config/tgsort/config.toml)
     #[arg(long, global = true, value_name = "PATH")]
@@ -63,7 +66,10 @@ fn real_main() -> Result<()> {
     match cli.cmd {
         Cmd::Init { force } => {
             if path.exists() && !force {
-                bail!("{} already exists (use --force to overwrite)", path.display());
+                bail!(
+                    "{} already exists (use --force to overwrite)",
+                    path.display()
+                );
             }
             if let Some(dir) = path.parent() {
                 std::fs::create_dir_all(dir)?;

@@ -9,7 +9,9 @@ fn home() -> Result<PathBuf> {
 }
 
 pub fn plist_path() -> Result<PathBuf> {
-    Ok(home()?.join("Library/LaunchAgents").join(format!("{LABEL}.plist")))
+    Ok(home()?
+        .join("Library/LaunchAgents")
+        .join(format!("{LABEL}.plist")))
 }
 
 fn log_path() -> Result<PathBuf> {
@@ -17,7 +19,9 @@ fn log_path() -> Result<PathBuf> {
 }
 
 fn xml(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 pub fn plist(exe: &Path, config: Option<&Path>, log: &Path) -> String {
@@ -27,7 +31,10 @@ pub fn plist(exe: &Path, config: Option<&Path>, log: &Path) -> String {
         args.push(c.display().to_string());
     }
     args.push("run".into());
-    let args: String = args.iter().map(|a| format!("    <string>{}</string>\n", xml(a))).collect();
+    let args: String = args
+        .iter()
+        .map(|a| format!("    <string>{}</string>\n", xml(a)))
+        .collect();
     let log = xml(&log.display().to_string());
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -54,19 +61,32 @@ pub fn plist(exe: &Path, config: Option<&Path>, log: &Path) -> String {
 }
 
 fn uid() -> Result<String> {
-    let out = Command::new("id").arg("-u").output().context("running `id -u`")?;
+    let out = Command::new("id")
+        .arg("-u")
+        .output()
+        .context("running `id -u`")?;
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 fn launchctl(args: &[&str]) -> Result<(bool, String)> {
-    let out = Command::new("launchctl").args(args).output().context("running launchctl")?;
-    let msg = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let out = Command::new("launchctl")
+        .args(args)
+        .output()
+        .context("running launchctl")?;
+    let msg = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
     Ok((out.status.success(), msg.trim().to_string()))
 }
 
 pub fn install(config_arg: Option<&Path>, config_path: &Path) -> Result<()> {
     if !config_path.exists() {
-        bail!("config {} not found; run `tgsort init` first", config_path.display());
+        bail!(
+            "config {} not found; run `tgsort init` first",
+            config_path.display()
+        );
     }
     let exe = std::env::current_exe()?.canonicalize()?;
     let config = config_arg.map(std::path::absolute).transpose()?;
@@ -115,7 +135,11 @@ mod tests {
 
     #[test]
     fn plist_contains_args_and_escapes() {
-        let p = plist(Path::new("/bin/tgsort"), Some(Path::new("/a&b/c.toml")), Path::new("/l.log"));
+        let p = plist(
+            Path::new("/bin/tgsort"),
+            Some(Path::new("/a&b/c.toml")),
+            Path::new("/l.log"),
+        );
         assert!(p.contains("<string>/bin/tgsort</string>\n    <string>--config</string>\n    <string>/a&amp;b/c.toml</string>\n    <string>run</string>"));
         assert!(p.contains("<key>KeepAlive</key>"));
         let p = plist(Path::new("/bin/tgsort"), None, Path::new("/l.log"));

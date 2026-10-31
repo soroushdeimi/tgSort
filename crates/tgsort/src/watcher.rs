@@ -1,12 +1,15 @@
-use crate::{notifier, pending::{Pending, Snapshot}};
+use crate::{
+    notifier,
+    pending::{Pending, Snapshot},
+};
 use anyhow::Result;
-use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
 use log::{debug, info, warn};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 use tgsort_core::{execute, is_ignorable, plan, Config, Outcome};
@@ -16,7 +19,9 @@ const MIN_SLEEP: Duration = Duration::from_millis(50);
 
 /// Top-level regular, non-ignorable files of `dir`.
 pub fn list_files(dir: &Path) -> Vec<PathBuf> {
-    let Ok(rd) = fs::read_dir(dir) else { return Vec::new() };
+    let Ok(rd) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
     let mut v: Vec<PathBuf> = rd
         .flatten()
         .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
@@ -29,7 +34,10 @@ pub fn list_files(dir: &Path) -> Vec<PathBuf> {
 
 fn snapshot(path: &Path) -> Option<Snapshot> {
     let m = fs::metadata(path).ok().filter(|m| m.is_file())?;
-    Some(Snapshot { size: m.len(), mtime: m.modified().ok()? })
+    Some(Snapshot {
+        size: m.len(),
+        mtime: m.modified().ok()?,
+    })
 }
 
 /// `(file, rule)` for a successful move.
@@ -55,7 +63,10 @@ fn is_open(path: &Path) -> bool {
 }
 
 fn process(cfg: &Config, file: &Path, dry_run: bool) -> Result<Res> {
-    let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let Some(p) = plan(cfg, file)? else {
         debug!("{name}: no matching rule, leaving in place");
         return Ok(Res::Left);
@@ -70,7 +81,11 @@ fn process(cfg: &Config, file: &Path, dry_run: bool) -> Result<Res> {
             Ok(Res::Moved(cfg.notify.then_some((name, p.rule))))
         }
         Outcome::DuplicateSkipped(d) => {
-            info!("duplicate of {}, left {name} in place [{}]", d.display(), p.rule);
+            info!(
+                "duplicate of {}, left {name} in place [{}]",
+                d.display(),
+                p.rule
+            );
             Ok(Res::Left)
         }
         Outcome::DuplicateDeleted(d) => {
@@ -91,7 +106,11 @@ pub fn once(cfg: &Config, dry_run: bool) {
         }
         for f in list_files(dir) {
             let settled = snapshot(&f).is_some_and(|s| {
-                s.size > 0 && SystemTime::now().duration_since(s.mtime).unwrap_or_default() >= settle
+                s.size > 0
+                    && SystemTime::now()
+                        .duration_since(s.mtime)
+                        .unwrap_or_default()
+                        >= settle
             });
             if !settled {
                 debug!("{}: not settled yet, skipping", f.display());
@@ -128,16 +147,29 @@ impl Daemon<'_> {
     }
 
     fn on_event(&mut self, path: &Path, now: Instant) {
-        let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else { return };
-        let parent = parent.canonicalize().unwrap_or_else(|_| parent.to_path_buf());
-        let hit = self.dirs.iter().find(|(c, _)| *c == parent).map(|(_, o)| o.join(name));
+        let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+            return;
+        };
+        let parent = parent
+            .canonicalize()
+            .unwrap_or_else(|_| parent.to_path_buf());
+        let hit = self
+            .dirs
+            .iter()
+            .find(|(c, _)| *c == parent)
+            .map(|(_, o)| o.join(name));
         if let Some(p) = hit {
             self.observe(&p, now);
         }
     }
 
     fn rescan(&mut self, now: Instant) {
-        let seen: HashSet<PathBuf> = self.cfg.watch_dirs.iter().flat_map(|d| list_files(d)).collect();
+        let seen: HashSet<PathBuf> = self
+            .cfg
+            .watch_dirs
+            .iter()
+            .flat_map(|d| list_files(d))
+            .collect();
         for p in self.pending.all() {
             if !seen.contains(&p) {
                 self.pending.observe(&p, None, now);
@@ -153,9 +185,15 @@ impl Daemon<'_> {
             self.pending.observe(&p, snapshot(&p), now);
         }
         let mut moved = Vec::new();
-        for f in self.pending.ready(Duration::from_secs(self.cfg.settle_secs), now) {
+        for f in self
+            .pending
+            .ready(Duration::from_secs(self.cfg.settle_secs), now)
+        {
             if is_open(&f) {
-                debug!("{}: still open by another process, rechecking later", f.display());
+                debug!(
+                    "{}: still open by another process, rechecking later",
+                    f.display()
+                );
                 self.pending.touch(&f, now);
                 continue;
             }
@@ -166,7 +204,10 @@ impl Daemon<'_> {
                 }
                 Ok(Res::Left) => self.pending.handled(&f),
                 Err(e) => {
-                    warn!("{}: {e:#} (will retry if it changes or in 5 min)", f.display());
+                    warn!(
+                        "{}: {e:#} (will retry if it changes or in 5 min)",
+                        f.display()
+                    );
                     self.pending.failed(&f, now);
                 }
             }
@@ -175,7 +216,12 @@ impl Daemon<'_> {
     }
 }
 
-fn try_watch(w: &mut RecommendedWatcher, dir: &Path, watched: &mut HashSet<PathBuf>, warned: &mut HashSet<PathBuf>) {
+fn try_watch(
+    w: &mut RecommendedWatcher,
+    dir: &Path,
+    watched: &mut HashSet<PathBuf>,
+    warned: &mut HashSet<PathBuf>,
+) {
     if watched.contains(dir) {
         return;
     }
@@ -195,9 +241,17 @@ fn try_watch(w: &mut RecommendedWatcher, dir: &Path, watched: &mut HashSet<PathB
 pub fn run(cfg: &Config, dry_run: bool) -> Result<()> {
     let (tx, rx) = mpsc::channel();
     let mut watcher = notify::recommended_watcher(tx)?;
-    let mut d = Daemon { cfg, dry_run, pending: Pending::default(), dirs: Vec::new() };
+    let mut d = Daemon {
+        cfg,
+        dry_run,
+        pending: Pending::default(),
+        dirs: Vec::new(),
+    };
     let (mut watched, mut warned) = (HashSet::new(), HashSet::new());
-    let refresh = |d: &mut Daemon, w: &mut RecommendedWatcher, watched: &mut HashSet<_>, warned: &mut HashSet<_>| {
+    let refresh = |d: &mut Daemon,
+                   w: &mut RecommendedWatcher,
+                   watched: &mut HashSet<_>,
+                   warned: &mut HashSet<_>| {
         d.dirs = cfg
             .watch_dirs
             .iter()
@@ -232,7 +286,10 @@ pub fn run(cfg: &Config, dry_run: bool) -> Result<()> {
             Err(mpsc::RecvTimeoutError::Disconnected) => anyhow::bail!("watcher channel closed"),
         }
         let now = Instant::now();
-        if d.pending.next_due(settle, now).is_some_and(|due| due <= now) {
+        if d.pending
+            .next_due(settle, now)
+            .is_some_and(|due| due <= now)
+        {
             d.tick(now);
         }
         if now.duration_since(last_scan) >= RESCAN {

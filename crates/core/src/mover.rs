@@ -23,9 +23,14 @@ pub enum Outcome {
 /// Moves `plan.source` to `plan.dest`, never overwriting and never losing data.
 pub fn execute(cfg: &Config, plan: &Plan) -> Result<Outcome> {
     let src = &plan.source;
-    let len = fs::metadata(src).with_context(|| format!("cannot stat {}", src.display()))?.len();
+    let len = fs::metadata(src)
+        .with_context(|| format!("cannot stat {}", src.display()))?
+        .len();
     ensure!(src.is_file(), "{} is not a regular file", src.display());
-    let dir = plan.dest.parent().context("destination has no parent directory")?;
+    let dir = plan
+        .dest
+        .parent()
+        .context("destination has no parent directory")?;
     fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
 
     for n in 0..=MAX_COLLISIONS {
@@ -33,9 +38,15 @@ pub fn execute(cfg: &Config, plan: &Plan) -> Result<Outcome> {
         // create_new reserves the name atomically, so nothing can be overwritten.
         match OpenOptions::new().write(true).create_new(true).open(&cand) {
             Ok(_) => {
-                move_file(src, &cand, len)
-                    .with_context(|| format!("cannot move {} to {}", src.display(), cand.display()))?;
-                log::info!("moved {} -> {} ({})", src.display(), cand.display(), plan.rule);
+                move_file(src, &cand, len).with_context(|| {
+                    format!("cannot move {} to {}", src.display(), cand.display())
+                })?;
+                log::info!(
+                    "moved {} -> {} ({})",
+                    src.display(),
+                    cand.display(),
+                    plan.rule
+                );
                 return Ok(Outcome::Moved(cand));
             }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
@@ -47,12 +58,21 @@ pub fn execute(cfg: &Config, plan: &Plan) -> Result<Outcome> {
                     false
                 }) {
                     if cfg.delete_duplicates {
-                        fs::remove_file(src)
-                            .with_context(|| format!("cannot delete duplicate {}", src.display()))?;
-                        log::info!("deleted duplicate {} (same as {})", src.display(), cand.display());
+                        fs::remove_file(src).with_context(|| {
+                            format!("cannot delete duplicate {}", src.display())
+                        })?;
+                        log::info!(
+                            "deleted duplicate {} (same as {})",
+                            src.display(),
+                            cand.display()
+                        );
                         return Ok(Outcome::DuplicateDeleted(cand));
                     }
-                    log::info!("skipped duplicate {} (same as {})", src.display(), cand.display());
+                    log::info!(
+                        "skipped duplicate {} (same as {})",
+                        src.display(),
+                        cand.display()
+                    );
                     return Ok(Outcome::DuplicateSkipped(cand));
                 }
             }
@@ -131,7 +151,8 @@ fn copy_move(src: &Path, dest: &Path, len: u64) -> Result<()> {
         let _ = fs::remove_file(dest);
         return Err(e);
     }
-    fs::remove_file(src).with_context(|| format!("copied, but cannot remove source {}", src.display()))
+    fs::remove_file(src)
+        .with_context(|| format!("copied, but cannot remove source {}", src.display()))
 }
 
 #[cfg(test)]
@@ -149,7 +170,11 @@ mod tests {
     }
 
     fn plan_for(source: PathBuf, dest: PathBuf) -> Plan {
-        Plan { rule: "t".into(), source, dest }
+        Plan {
+            rule: "t".into(),
+            source,
+            dest,
+        }
     }
 
     #[test]
@@ -184,7 +209,9 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let dest = mk(&d.path().join("out/README"), "old");
         let src = mk(&d.path().join("in/README"), "new");
-        let Outcome::Moved(p) = execute(&cfg(false), &plan_for(src, dest)).unwrap() else { panic!() };
+        let Outcome::Moved(p) = execute(&cfg(false), &plan_for(src, dest)).unwrap() else {
+            panic!()
+        };
         assert_eq!(p, d.path().join("out/README (1)"));
     }
 

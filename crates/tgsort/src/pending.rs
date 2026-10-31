@@ -40,9 +40,22 @@ impl Pending {
         };
         match self.map.get_mut(path) {
             Some(e) if e.snap == snap => {}
-            Some(e) => *e = Entry { snap, last_change: now, state: State::Waiting },
+            Some(e) => {
+                *e = Entry {
+                    snap,
+                    last_change: now,
+                    state: State::Waiting,
+                }
+            }
             None => {
-                self.map.insert(path.to_path_buf(), Entry { snap, last_change: now, state: State::Waiting });
+                self.map.insert(
+                    path.to_path_buf(),
+                    Entry {
+                        snap,
+                        last_change: now,
+                        state: State::Waiting,
+                    },
+                );
             }
         }
     }
@@ -56,7 +69,10 @@ impl Pending {
                     e.state = State::Waiting;
                 }
             }
-            if e.state == State::Waiting && e.snap.size > 0 && now.duration_since(e.last_change) >= settle {
+            if e.state == State::Waiting
+                && e.snap.size > 0
+                && now.duration_since(e.last_change) >= settle
+            {
                 out.push(p.clone());
             }
         }
@@ -105,7 +121,11 @@ impl Pending {
 
     /// Paths still waiting to settle (the ones worth re-stat'ing every tick).
     pub fn waiting(&self) -> Vec<PathBuf> {
-        self.map.iter().filter(|(_, e)| e.state == State::Waiting).map(|(p, _)| p.clone()).collect()
+        self.map
+            .iter()
+            .filter(|(_, e)| e.state == State::Waiting)
+            .map(|(p, _)| p.clone())
+            .collect()
     }
 
     pub fn all(&self) -> Vec<PathBuf> {
@@ -125,7 +145,10 @@ mod tests {
     const S: Duration = Duration::from_secs(3);
 
     fn snap(size: u64, secs: u64) -> Snapshot {
-        Snapshot { size, mtime: SystemTime::UNIX_EPOCH + Duration::from_secs(secs) }
+        Snapshot {
+            size,
+            mtime: SystemTime::UNIX_EPOCH + Duration::from_secs(secs),
+        }
     }
 
     #[test]
@@ -203,13 +226,21 @@ mod tests {
     fn next_due_covers_waiting_failed_and_idle() {
         let (mut p, t0) = (Pending::default(), Instant::now());
         assert_eq!(p.next_due(S, t0), None);
-        let (a, b, c, d) = (Path::new("/a"), Path::new("/b"), Path::new("/c"), Path::new("/d"));
+        let (a, b, c, d) = (
+            Path::new("/a"),
+            Path::new("/b"),
+            Path::new("/c"),
+            Path::new("/d"),
+        );
         p.observe(a, Some(snap(5, 1)), t0 + Duration::from_secs(2));
         p.observe(b, Some(snap(0, 1)), t0);
         assert_eq!(p.next_due(S, t0), Some(t0 + Duration::from_secs(2) + S));
         p.observe(c, Some(snap(5, 1)), t0);
         assert_eq!(p.next_due(S, t0), Some(t0 + S));
-        assert_eq!(p.next_due(S, t0 + Duration::from_secs(10)), Some(t0 + Duration::from_secs(10)));
+        assert_eq!(
+            p.next_due(S, t0 + Duration::from_secs(10)),
+            Some(t0 + Duration::from_secs(10))
+        );
         p.handled(c);
         p.failed(a, t0);
         assert_eq!(p.next_due(S, t0), Some(t0 + RETRY_AFTER));
