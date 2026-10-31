@@ -37,12 +37,12 @@ fallback_dest = "~/Downloads/Telegram Sorted/Other"
 [[rule]]
 name = "Series"
 name_regex = '(?i)^(?P<series>.+?)[ ._-]S\d{2}E\d{2}'
-extensions = ["mkv", "mp4", "avi"]
+extensions = ["mkv", "mp4", "avi", "m4v", "ts"]
 dest = "~/Movies/Series/{series}"
 
 [[rule]]
 name = "Videos"
-extensions = ["mp4", "mkv", "mov", "avi", "webm"]
+extensions = ["mp4", "mkv", "mov", "avi", "webm", "m4v", "wmv", "flv", "3gp", "ts"]
 dest = "~/Movies/Telegram/{year}-{month}"
 
 [[rule]]
@@ -66,3 +66,8 @@ name = "Images"
 extensions = ["jpg", "jpeg", "png", "gif", "webp", "heic"]
 max_size_mb = 50
 dest = "~/Pictures/Telegram/{year}-{month}"
+
+[[rule]]
+name = "Music"
+extensions = ["mp3", "flac", "m4a", "aac", "ogg", "opus", "wav"]
+dest = "~/Music/Telegram"
